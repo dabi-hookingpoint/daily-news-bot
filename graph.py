@@ -19,15 +19,10 @@ from config import load_config
 client = OpenAI()
 UA = {"User-Agent": "Mozilla/5.0 (newsletter-agent-course)"}
 
-FEEDS = [
-    ("TechCrunch", "https://techcrunch.com/category/artificial-intelligence/feed/"),
-    ("AI타임스", "https://www.aitimes.com/rss/allArticle.xml"),
-    ("The Verge", "https://www.theverge.com/rss/ai-artificial-intelligence/index.xml"),
-]
-
 BATCH, TARGET = 40, 5  # 예선 묶음 크기, 최종 발행 건수
 
-CFG = load_config()  # 독자·기준·토픽 — 분야가 바뀌면 audience.yaml만 고치면 된다
+CFG = load_config()  # 독자·기준·토픽·소스 — 분야가 바뀌면 audience.yaml만 고치면 된다
+FEEDS = [(s.이름, s.url) for s in CFG.소스]
 
 
 def _build_criteria(cfg) -> str:
@@ -41,7 +36,7 @@ def _build_criteria(cfg) -> str:
 CRITERIA = _build_criteria(CFG)
 
 REPORT_SYS = (
-    f"당신은 {CFG.독자.누구}를 위한 AI 뉴스레터 기자입니다.\n"
+    f"당신은 {CFG.독자.누구}를 위한 뉴스레터 기자입니다.\n"
     "아래 기사 본문을 읽고 헤드라인·요약·왜 중요한지를 쓰세요.\n"
     "'주목된다·기대를 모은다' 같은 기자체 표현은 쓰지 마세요."
 )
@@ -69,7 +64,7 @@ class Shortlist(BaseModel):
 class Draft(BaseModel):
     headline: str = Field(description="20자 내외의 한국어 헤드라인")
     summary: str = Field(description="세 문장 요약. ~합니다체, 과장 없이 건조하게")
-    why: str = Field(description="국내 개발팀에게 왜 중요한지 한 문장")
+    why: str = Field(description="독자에게 왜 중요한지 한 문장")
 
 
 class Verdict(BaseModel):
@@ -202,7 +197,7 @@ def verify(s: dict) -> dict:  # ④ 검수
 def build_embeds(run_id, lead, articles):
     if not articles:  # 조용한 날에도 한 장은 보낸다
         return [{"title": f"🗞️ {run_id}", "color": DEFAULT_COLOR, "description": "오늘은 조용합니다."}]
-    embeds = [{"title": f"🗞️ {run_id} · AI 브리핑", "description": lead, "color": DEFAULT_COLOR}]
+    embeds = [{"title": f"🗞️ {run_id} · 브리핑", "description": lead, "color": DEFAULT_COLOR}]
     for i, a in enumerate(articles, 1):
         desc = a["summary"]
         if a.get("why"):
