@@ -15,11 +15,17 @@ class Topic(BaseModel):
     데스크지침: str = ""
 
 
+class Source(BaseModel):
+    이름: str
+    url: str
+
+
 class Config(BaseModel):
     독자: Audience
     중요도_기준: list[str] = Field(min_length=1)
     버릴_것: list[str] = Field(default_factory=list)
     토픽: list[Topic] = Field(default_factory=list)
+    소스: list[Source] = Field(min_length=1)
 
 
 def load_config(path: str | Path = "audience.yaml") -> Config:
