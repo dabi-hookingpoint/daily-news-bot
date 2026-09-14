@@ -1,0 +1,7 @@
+feedparser
+requests
+trafilatura
+openai
+langgraph
+pydantic
+brotli>=1.2.0
