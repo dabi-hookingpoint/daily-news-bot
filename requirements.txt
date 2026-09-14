@@ -4,4 +4,5 @@ trafilatura
 openai
 langgraph
 pydantic
+pyyaml
 brotli>=1.2.0
