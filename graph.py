@@ -14,6 +14,8 @@ from langgraph.types import Send
 from openai import OpenAI
 from pydantic import BaseModel, Field
 
+from config import load_config
+
 client = OpenAI()
 UA = {"User-Agent": "Mozilla/5.0 (newsletter-agent-course)"}
 
@@ -25,15 +27,21 @@ FEEDS = [
 
 BATCH, TARGET = 40, 5  # 예선 묶음 크기, 최종 발행 건수
 
-CRITERIA = (
-    "독자는 AI를 실제 제품에 붙이는 국내 개발팀입니다.\n"
-    "- 이번 주 일하는 방식이 바뀔 만한가\n"
-    "- 지금 쓰는 도구·API의 가격·한도·정책이 실제로 변했나\n"
-    "버릴 것: 발표 예정·로드맵만 있는 것, MOU·투자유치·수상 같은 홍보성 소식"
-)
+CFG = load_config()  # 독자·기준·토픽 — 분야가 바뀌면 audience.yaml만 고치면 된다
+
+
+def _build_criteria(cfg) -> str:
+    lines = [f"독자는 {cfg.독자.누구}입니다."]
+    lines += [f"- {c}" for c in cfg.중요도_기준]
+    if cfg.버릴_것:
+        lines.append("버릴 것: " + ", ".join(cfg.버릴_것))
+    return "\n".join(lines)
+
+
+CRITERIA = _build_criteria(CFG)
 
 REPORT_SYS = (
-    "당신은 국내 개발팀을 위한 AI 뉴스레터 기자입니다.\n"
+    f"당신은 {CFG.독자.누구}를 위한 AI 뉴스레터 기자입니다.\n"
     "아래 기사 본문을 읽고 헤드라인·요약·왜 중요한지를 쓰세요.\n"
     "'주목된다·기대를 모은다' 같은 기자체 표현은 쓰지 마세요."
 )
@@ -43,13 +51,7 @@ CHECK_SYS = (
     "헤드라인과 요약만 보고 판단하고, 번역이나 단위 환산은 문제가 아닙니다."
 )
 
-COLORS = {
-    "모델·API": 0x0B6E77,
-    "도구·프레임워크": 0x4C7C9C,
-    "정책·규제": 0x8F5606,
-    "사례·적용": 0x2E7D5B,
-    "연구": 0x6A4A9C,
-}
+COLORS = {t.이름: int(t.색상.lstrip("#"), 16) for t in CFG.토픽}
 DEFAULT_COLOR = 0x5F7476
 TITLE_MAX, DESC_MAX, EMBED_MAX, TOTAL_MAX = 256, 4096, 10, 5800  # 6000에서 여유를 둔다
 
