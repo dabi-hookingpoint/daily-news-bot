@@ -1,4 +1,5 @@
 from pathlib import Path
+from typing import Literal
 
 import yaml
 from pydantic import BaseModel, Field
@@ -18,6 +19,7 @@ class Topic(BaseModel):
 class Source(BaseModel):
     이름: str
     url: str
+    역할: Literal["일반", "평론"] = "일반"
 
 
 class Config(BaseModel):
