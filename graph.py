@@ -42,8 +42,9 @@ REPORT_SYS = (
 )
 
 CHECK_SYS = (
-    "요약이 원문에서 뒷받침되는지 판정하세요.\n"
-    "헤드라인과 요약만 보고 판단하고, 번역이나 단위 환산은 문제가 아닙니다."
+    "아래 [원문]을 기준으로 [헤드라인]·[요약]·[왜 중요한지] 세 항목에 원문에 없는 내용이 있는지 판정하세요.\n"
+    "숫자·수치·인물·기관명·인과관계를 특히 원문과 대조하세요.\n"
+    "번역체 표현이나 단위 환산(예: '5억 원'과 '$500 million'은 같은 값)은 문제로 보지 마세요."
 )
 
 COLORS = {t.이름: int(t.색상.lstrip("#"), 16) for t in CFG.토픽}
@@ -172,7 +173,12 @@ def report(s: dict) -> dict:  # ③ 취재·요약
 
 
 def check(d):
-    user = f"[원문]\n{d['body'][:5000]}\n\n[헤드라인]\n{d['headline']}\n\n[요약]\n{d['summary']}"
+    user = (
+        f"[원문]\n{d['body'][:6000]}\n\n"
+        f"[헤드라인]\n{d['headline']}\n\n"
+        f"[요약]\n{d['summary']}\n\n"
+        f"[왜 중요한지]\n{d['why']}"
+    )
     return client.chat.completions.parse(
         model="gpt-4.1-mini",
         temperature=0,
@@ -184,12 +190,21 @@ def check(d):
 def verify(s: dict) -> dict:  # ④ 검수
     kept, dropped = [], []
     for d in s["drafted"]:
-        (kept if check(d).ok else dropped).append(d)
+        try:
+            v = check(d)
+        except Exception as e:
+            dropped.append((d, [f"검수 호출 실패: {e}"]))
+            continue
+        if v.ok:
+            kept.append(d)
+        else:
+            dropped.append((d, v.problems))
+    detail = [f"{x['source']}({' · '.join(p) if p else '사유 없음'})" for x, p in dropped]
     return {
         "verified": kept,
         "log": [
             f"④ 검수   {len(s['drafted'])} → {len(kept)}건"
-            + (f" · 불합격 {[x['source'] for x in dropped]}" if dropped else "")
+            + (f" · 불합격 {detail}" if dropped else "")
         ],
     }
 
