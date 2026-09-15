@@ -324,6 +324,7 @@ def send(run_id, movies, dramas, review_articles, general_articles, webhook=None
             f"[dry-run] embed {len(payload['embeds'])}개 · "
             f"{len(json.dumps(payload, ensure_ascii=False))}자 — 보내지 않음"
         )
+        print("[dry-run-content] " + json.dumps(payload["embeds"], ensure_ascii=False))
         return False
     r = requests.post(webhook, json=payload, timeout=20)
     ok = r.status_code in (200, 204)
