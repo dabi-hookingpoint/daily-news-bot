@@ -29,6 +29,7 @@ jobs:
         env:                     # ④ 비밀값은 여기로만 들어간다
           OPENAI_API_KEY:      ${{ secrets.OPENAI_API_KEY }}
           DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+          KOBIS_API_KEY:       ${{ secrets.KOBIS_API_KEY }}
           TZ: Asia/Seoul
 
       - name: 실행 기록 보관    # ⑤ 로그 말고 파일로 남은 것도 챙긴다

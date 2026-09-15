@@ -14,15 +14,17 @@ from langgraph.types import Send
 from openai import OpenAI
 from pydantic import BaseModel, Field
 
+from charts import fetch_box_office_top10, fetch_ott_top10
 from config import load_config
 
 client = OpenAI()
 UA = {"User-Agent": "Mozilla/5.0 (newsletter-agent-course)"}
 
-BATCH, TARGET = 40, 5  # 예선 묶음 크기, 최종 발행 건수
+BATCH, TARGET = 40, 5  # 예선 묶음 크기, 최종 발행 건수(일반 뉴스). 평론은 1건 고정.
 
 CFG = load_config()  # 독자·기준·토픽·소스 — 분야가 바뀌면 audience.yaml만 고치면 된다
-FEEDS = [(s.이름, s.url) for s in CFG.소스]
+GENERAL_FEEDS = [(s.이름, s.url) for s in CFG.소스 if s.역할 == "일반"]
+REVIEW_FEEDS = [(s.이름, s.url) for s in CFG.소스 if s.역할 == "평론"]
 
 
 def _build_criteria(cfg) -> str:
@@ -49,6 +51,8 @@ CHECK_SYS = (
 
 COLORS = {t.이름: int(t.색상.lstrip("#"), 16) for t in CFG.토픽}
 DEFAULT_COLOR = 0x5F7476
+REVIEW_COLOR = 0xC33C2E  # 로튼토마토 톤
+CHART_COLORS = {"movie": 0x0B6E77, "ott": 0x4C7C9C}
 TITLE_MAX, DESC_MAX, EMBED_MAX, TOTAL_MAX = 256, 4096, 10, 5800  # 6000에서 여유를 둔다
 
 
@@ -74,6 +78,9 @@ class Verdict(BaseModel):
 
 
 class Brief(TypedDict):
+    label: str          # 로그 구분용: "일반" 또는 "평론"
+    feeds: list          # [(source_name, rss_url), ...] — 이 갈래가 수집할 소스
+    target: int           # 최종 몇 건을 뽑을지 (일반=5, 평론=1)
     hours: int
     collected: list
     picked: list
@@ -82,12 +89,23 @@ class Brief(TypedDict):
     log: Annotated[list, operator.add]
 
 
-INIT = {"hours": 0, "collected": [], "picked": [], "drafted": [], "verified": [], "log": []}
+def make_init(label: str, feeds: list, target: int) -> dict:
+    return {
+        "label": label,
+        "feeds": feeds,
+        "target": target,
+        "hours": 0,
+        "collected": [],
+        "picked": [],
+        "drafted": [],
+        "verified": [],
+        "log": [],
+    }
 
 
 def collect(s: dict) -> dict:  # ① 수집
     all_articles = []
-    for name, url in FEEDS:
+    for name, url in s["feeds"]:
         try:
             parsed = feedparser.parse(requests.get(url, headers=UA, timeout=20).content)
         except requests.exceptions.RequestException as e:
@@ -110,7 +128,7 @@ def collect(s: dict) -> dict:  # ① 수집
             )
     return {
         "collected": all_articles,
-        "log": [f"① 수집   {len(all_articles)}건"],
+        "log": [f"①[{s['label']}] 수집   {len(all_articles)}건"],
     }
 
 
@@ -131,14 +149,16 @@ def ask_picks(items, n):
 
 def select(s: dict) -> dict:  # ② 중요도 선별
     items = s["collected"]
+    if not items:
+        return {"picked": [], "log": [f"②[{s['label']}] 선별   0건 — 수집된 기사 없음"]}
     survivors = []
     for i in range(0, len(items), BATCH):
         chunk = items[i : i + BATCH]
         survivors += [chunk[p.index] for p in ask_picks(chunk, 8)]
-    finals = ask_picks(survivors, TARGET)
+    finals = ask_picks(survivors, s["target"]) if survivors else []
     return {
         "picked": [survivors[p.index] for p in finals],
-        "log": [f"② 선별   {len(items)} → 예선 {len(survivors)} → {len(finals)}건"],
+        "log": [f"②[{s['label']}] 선별   {len(items)} → 예선 {len(survivors)} → {len(finals)}건"],
     }
 
 
@@ -203,29 +223,88 @@ def verify(s: dict) -> dict:  # ④ 검수
     return {
         "verified": kept,
         "log": [
-            f"④ 검수   {len(s['drafted'])} → {len(kept)}건"
+            f"④[{s['label']}] 검수   {len(s['drafted'])} → {len(kept)}건"
             + (f" · 불합격 {detail}" if dropped else "")
         ],
     }
 
 
-def build_embeds(run_id, lead, articles):
-    if not articles:  # 조용한 날에도 한 장은 보낸다
-        return [{"title": f"🗞️ {run_id}", "color": DEFAULT_COLOR, "description": "오늘은 조용합니다."}]
-    embeds = [{"title": f"🗞️ {run_id} · 브리핑", "description": lead, "color": DEFAULT_COLOR}]
-    for i, a in enumerate(articles, 1):
-        desc = a["summary"]
-        if a.get("why"):
-            desc += f"\n\n💡 **{a['why']}**"
-        embeds.append(
-            {
-                "title": f"{i}. {a['headline']}"[:TITLE_MAX],
-                "description": desc[:DESC_MAX],
-                "url": a["url"],
-                "color": COLORS.get(a.get("topic", ""), DEFAULT_COLOR),
-                "footer": {"text": f"{a['source']} · {a['when']}"},
-            }
+def build():
+    g = StateGraph(Brief)
+    g.add_node("collect", collect)
+    g.add_node("select", select)
+    g.add_node("report", report)
+    g.add_node("verify", verify)
+    g.add_edge(START, "collect")
+    g.add_edge("collect", "select")
+    g.add_conditional_edges("select", fan_report, ["report"])
+    g.add_edge("report", "verify")
+    g.add_edge("verify", END)
+    return g
+
+
+def _to_article(v: dict) -> dict:
+    return {
+        "headline": v["headline"],
+        "summary": v["summary"],
+        "why": v["why"],
+        "url": v["url"],
+        "source": v["source"],
+        "topic": v.get("event", ""),
+        "when": v["at"].strftime("%m-%d %H:%M"),
+    }
+
+
+def build_chart_lines(rows: list, kind: str) -> str:
+    if not rows:
+        return "오늘은 데이터를 가져오지 못했습니다."
+    lines = []
+    for r in rows[:10]:
+        extra = (
+            f"오늘 {r['audience_today']:,}명 · 누적 {r['audience_total']:,}명"
+            if kind == "movie"
+            else f"TOP10 {r['weeks_in_top10']}주째"
         )
+        lines.append(f"**{r['rank']}.** [{r['title']}]({r['url']}) — {extra}")
+    return "\n".join(lines)
+
+
+def build_article_embed(a: dict, title_prefix: str = "", color_override: int | None = None) -> dict:
+    desc = a["summary"]
+    if a.get("why"):
+        desc += f"\n\n💡 **{a['why']}**"
+    return {
+        "title": f"{title_prefix}{a['headline']}"[:TITLE_MAX],
+        "description": desc[:DESC_MAX],
+        "url": a["url"],
+        "color": color_override if color_override is not None else COLORS.get(a.get("topic", ""), DEFAULT_COLOR),
+        "footer": {"text": f"{a['source']} · {a['when']}"},
+    }
+
+
+def build_digest_embeds(run_id, movies, dramas, review_articles, general_articles) -> list[dict]:
+    embeds = [
+        {
+            "title": f"🎬 {run_id} · 프로덕션 브리핑",
+            "description": "박스오피스·OTT 순위, 오늘의 평론, 업계 뉴스를 모았습니다.",
+            "color": DEFAULT_COLOR,
+        },
+        {
+            "title": "🎟️ 박스오피스 TOP10",
+            "description": build_chart_lines(movies, "movie"),
+            "color": CHART_COLORS["movie"],
+        },
+        {
+            "title": "📺 OTT(넷플릭스) 드라마 TOP10",
+            "description": build_chart_lines(dramas, "ott"),
+            "color": CHART_COLORS["ott"],
+        },
+    ]
+    for a in review_articles:
+        embeds.append(build_article_embed(a, "🍅 오늘의 평론 — ", color_override=REVIEW_COLOR))
+    for a in general_articles:
+        embeds.append(build_article_embed(a))
+
     total = lambda es: sum(
         len(e.get("title", "")) + len(e.get("description", "")) + len(e.get("footer", {}).get("text", ""))
         for e in es
@@ -235,8 +314,11 @@ def build_embeds(run_id, lead, articles):
     return embeds
 
 
-def send(run_id, lead, articles, webhook=None, dry_run=True):
-    payload = {"username": "편집실", "embeds": build_embeds(run_id, lead, articles)}
+def send(run_id, movies, dramas, review_articles, general_articles, webhook=None, dry_run=True):
+    payload = {
+        "username": "편집실",
+        "embeds": build_digest_embeds(run_id, movies, dramas, review_articles, general_articles),
+    }
     if dry_run or not webhook:
         print(
             f"[dry-run] embed {len(payload['embeds'])}개 · "
@@ -249,72 +331,42 @@ def send(run_id, lead, articles, webhook=None, dry_run=True):
     return ok
 
 
-def make_lead(arts):
-    if not arts:
-        return ""
-    srcs = ", ".join(dict.fromkeys(a["source"] for a in arts))
-    return f"오늘은 {len(arts)}건을 골랐습니다. ({srcs})"
+def run():
+    general = build().compile().invoke(make_init("일반", GENERAL_FEEDS, TARGET))
+    review = build().compile().invoke(make_init("평론", REVIEW_FEEDS, 1))
 
+    movies = fetch_box_office_top10(os.environ.get("KOBIS_API_KEY", ""))
+    dramas = fetch_ott_top10()
 
-def publish(s: dict) -> dict:  # ⑤ 발행
-    arts = [
-        {
-            "headline": a["headline"],
-            "summary": a["summary"],
-            "why": a["why"],
-            "url": a["url"],
-            "source": a["source"],
-            "topic": a.get("event", ""),
-            "when": a["at"].strftime("%m-%d %H:%M"),
-        }
-        for a in s["verified"]
-    ]
+    general_articles = [_to_article(v) for v in general["verified"]]
+    review_articles = [_to_article(v) for v in review["verified"]]
+
     today = datetime.now().strftime("%Y-%m-%d")
     sent = send(
         today,
-        make_lead(arts),
-        arts,
+        movies,
+        dramas,
+        review_articles,
+        general_articles,
         webhook=os.environ.get("DISCORD_WEBHOOK_URL"),
         dry_run=os.environ.get("DRY_RUN", "1") == "1",
     )
-    label = f"{len(arts)}건" if arts else "조용합니다"
-    return {"log": [f"⑤ 발행   {label} · {'보냄' if sent else 'dry-run'}"]}
 
-
-def build():
-    g = StateGraph(Brief)
-    g.add_node("collect", collect)
-    g.add_node("select", select)
-    g.add_node("report", report)
-    g.add_node("verify", verify)
-    g.add_node("publish", publish)
-    g.add_edge(START, "collect")
-    g.add_edge("collect", "select")
-    g.add_conditional_edges("select", fan_report, ["report"])
-    g.add_edge("report", "verify")
-    g.add_edge("verify", "publish")
-    g.add_edge("publish", END)
-    return g
-
-
-def run():
-    out = build().compile().invoke(INIT)
+    log = general["log"] + review["log"] + [f"⑤ 발행   {'보냄' if sent else 'dry-run'}"]
     row = {
         "run_id": datetime.now().strftime("%Y-%m-%d %H:%M"),
-        "collected": len(out["collected"]),
-        "picked": len(out["picked"]),
-        "drafted": len(out["drafted"]),
-        "published": len(out["verified"]),
-        "hours": out["hours"],
-        "by_source": {},
-        "log": out["log"],
+        "general_collected": len(general["collected"]),
+        "general_published": len(general_articles),
+        "review_collected": len(review["collected"]),
+        "review_published": len(review_articles),
+        "movies_charted": len(movies),
+        "dramas_charted": len(dramas),
+        "log": log,
     }
-    for a in out["verified"]:
-        row["by_source"][a["source"]] = row["by_source"].get(a["source"], 0) + 1
     path = pathlib.Path("store/metrics.jsonl")
     path.parent.mkdir(exist_ok=True)
     with path.open("a") as f:
         f.write(json.dumps(row, ensure_ascii=False) + "\n")
-    for line in out["log"]:
+    for line in log:
         print(line)
-    return out
+    return row
